@@ -137,6 +137,12 @@
         .toast.error { border-left: 4px solid #ea4335; }
         .toast.warning { border-left: 4px solid #fbbc04; }
         .toast.info { border-left: 4px solid #4285f4; }
+
+        .batch-session-item { display: flex; align-items: center; gap: 10px; padding: 10px 20px; border-bottom: 1px solid #f5f5f5; }
+        .batch-session-item:hover { background: #f8f9fa; }
+        .batch-session-item input[type="checkbox"] { flex-shrink: 0; width: 16px; height: 16px; }
+        .batch-session-item.exported { background: #f0fdf4; }
+        .exported-tag { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 11px; background: #e6f4ea; color: #137333; margin-left: 6px; }
     </style>
 </head>
 <body>
@@ -175,6 +181,7 @@
             <button class="btn btn-secondary" onclick="resetPhoto()">🔄 重置</button>
             <button class="btn btn-success" onclick="exportPhoto()">💾 导出</button>
             <button class="btn btn-light" onclick="showHistory()">📋 历史记录</button>
+            <button class="btn btn-light" onclick="goToLayout()">📄 批量排版</button>
             <button class="btn btn-light" onclick="logout()">退出登录</button>
         </div>
     </div>
@@ -257,6 +264,13 @@
             <button class="tab active" id="tabAll" onclick="switchHistoryTab('all')">全部操作</button>
             <button class="tab" id="tabSessions" onclick="switchHistoryTab('sessions')">会话列表</button>
             <button class="tab" id="tabStats" onclick="switchHistoryTab('stats')">统计信息</button>
+            <button class="tab" id="tabBatchSelect" onclick="switchHistoryTab('batch')" style="background:#e8f0fe;color:#1a73e8;">批量排版</button>
+        </div>
+        <div class="history-batch-bar hidden" id="historyBatchBar" style="padding:10px 20px;background:#f8f9fa;border-bottom:1px solid #f0f0f0;display:flex;align-items:center;gap:8px;">
+            <button class="btn btn-light btn-sm" onclick="batchSelectAll()" style="padding:4px 10px;font-size:12px;">全选</button>
+            <button class="btn btn-light btn-sm" onclick="batchDeselectAll()" style="padding:4px 10px;font-size:12px;">取消全选</button>
+            <span style="font-size:12px;color:#5f6368;">已选 <span id="batchSelectedCount" style="font-weight:600;color:#1a73e8;">0</span> 个</span>
+            <button class="btn btn-primary btn-sm" id="batchLayoutBtn" onclick="batchGoToLayout()" disabled style="padding:4px 10px;font-size:12px;margin-left:auto;">📄 排版选中</button>
         </div>
         <div class="history-stats hidden" id="historyStats">
             <div class="stat-item"><span class="stat-num" id="statSessions">0</span>上传次数</div>
@@ -427,11 +441,92 @@
             document.getElementById('tabAll').classList.toggle('active', tab === 'all');
             document.getElementById('tabSessions').classList.toggle('active', tab === 'sessions');
             document.getElementById('tabStats').classList.toggle('active', tab === 'stats');
+            document.getElementById('tabBatchSelect').classList.toggle('active', tab === 'batch');
             document.getElementById('historyStats').classList.toggle('hidden', tab !== 'stats');
+            document.getElementById('historyBatchBar').classList.toggle('hidden', tab !== 'batch');
 
             if (tab === 'all') loadHistory('all');
             else if (tab === 'sessions') loadHistory('sessions');
             else if (tab === 'stats') loadStats();
+            else if (tab === 'batch') loadBatchSelect();
+        }
+
+        let batchSelectedSids = [];
+
+        function goToLayout() {
+            window.location.href = '/layout.html';
+        }
+
+        async function loadBatchSelect() {
+            const listEl = document.getElementById('historyList');
+            listEl.innerHTML = '<div style="text-align:center;color:#9aa0a6;padding:40px">加载中...</div>';
+            try {
+                const res = await fetch(API + '/api/history?type=sessions&limit=50', {
+                    headers: authHeaders(),
+                });
+                if (handleAuthError(res)) return;
+                const data = await res.json();
+                const sessions = data.sessions || [];
+                if (sessions.length === 0) {
+                    listEl.innerHTML = '<div style="text-align:center;color:#9aa0a6;padding:40px">暂无会话记录，请先上传照片</div>';
+                    return;
+                }
+                listEl.innerHTML = sessions.map(s => `
+                    <div class="batch-session-item${s.layout_exported ? ' exported' : ''}" data-sid="${s.sid}">
+                        <input type="checkbox" class="batch-checkbox" value="${s.sid}" ${batchSelectedSids.includes(s.sid) ? 'checked' : ''}>
+                        <div style="flex:1;min-width:0;">
+                            <div class="action-file">${s.filename || '未知文件'}</div>
+                            <div class="action-params">
+                                ${s.has_face ? '✅ 人脸' : '❌ 无人脸'}
+                                ${s.confidence ? ' (置信度: ' + s.confidence.toFixed(2) + ')' : ''}
+                                ${s.layout_exported ? '<span class="exported-tag">已排版</span>' : ''}
+                            </div>
+                            <div class="action-time">${s.created_at}</div>
+                        </div>
+                    </div>
+                `).join('');
+                listEl.querySelectorAll('.batch-checkbox').forEach(cb => {
+                    cb.addEventListener('change', function() {
+                        const sid = this.value;
+                        if (this.checked) {
+                            if (!batchSelectedSids.includes(sid)) batchSelectedSids.push(sid);
+                        } else {
+                            batchSelectedSids = batchSelectedSids.filter(s => s !== sid);
+                        }
+                        document.getElementById('batchSelectedCount').textContent = batchSelectedSids.length;
+                        document.getElementById('batchLayoutBtn').disabled = batchSelectedSids.length === 0;
+                    });
+                });
+                document.getElementById('batchSelectedCount').textContent = batchSelectedSids.length;
+                document.getElementById('batchLayoutBtn').disabled = batchSelectedSids.length === 0;
+            } catch (err) {
+                listEl.innerHTML = '<div style="text-align:center;color:#d93025;padding:40px">加载失败</div>';
+            }
+        }
+
+        function batchSelectAll() {
+            document.querySelectorAll('.batch-checkbox').forEach(cb => {
+                cb.checked = true;
+                if (!batchSelectedSids.includes(cb.value)) batchSelectedSids.push(cb.value);
+            });
+            document.getElementById('batchSelectedCount').textContent = batchSelectedSids.length;
+            document.getElementById('batchLayoutBtn').disabled = batchSelectedSids.length === 0;
+        }
+
+        function batchDeselectAll() {
+            document.querySelectorAll('.batch-checkbox').forEach(cb => { cb.checked = false; });
+            batchSelectedSids = [];
+            document.getElementById('batchSelectedCount').textContent = 0;
+            document.getElementById('batchLayoutBtn').disabled = true;
+        }
+
+        function batchGoToLayout() {
+            if (batchSelectedSids.length === 0) {
+                showModal('请先选择至少一个会话', {type:'warning', title:'温馨提示'});
+                return;
+            }
+            localStorage.setItem('idphoto_batch_sids', JSON.stringify(batchSelectedSids));
+            window.location.href = '/layout.html';
         }
 
         async function loadHistory(type) {
@@ -458,6 +553,7 @@
                                 ${s.has_face ? '✅ 检测到人脸' : '❌ 未检测到人脸'}
                                 ${s.confidence ? ' (置信度: ' + s.confidence.toFixed(2) + ')' : ''}
                                 ${s.has_glasses ? ' 👓 佩戴眼镜' : ''}
+                                ${s.layout_exported ? '<span class="exported-tag">已排版</span>' : ''}
                             </div>
                             <div class="action-time">${s.created_at}</div>
                         </div>

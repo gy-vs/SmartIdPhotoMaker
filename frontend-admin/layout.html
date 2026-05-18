@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>A4 批量排版 - 智能证件照制作系统</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f0f2f5; color: #333; min-height: 100vh; }
+
+        .header { background: #fff; padding: 12px 24px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); display: flex; align-items: center; justify-content: space-between; }
+        .header h1 { font-size: 20px; color: #1a73e8; }
+
+        .btn { padding: 8px 16px; border: none; border-radius: 6px; font-size: 13px; cursor: pointer; transition: all 0.2s; }
+        .btn:hover { opacity: 0.85; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-primary { background: #1a73e8; color: #fff; }
+        .btn-success { background: #0d652d; color: #fff; }
+        .btn-secondary { background: #5f6368; color: #fff; }
+        .btn-light { background: #e8f0fe; color: #1a73e8; border: 1px solid #d2e3fc; }
+        .btn-sm { padding: 4px 10px; font-size: 12px; }
+
+        .main { max-width: 900px; margin: 20px auto; padding: 0 24px; }
+
+        .card { background: #fff; border-radius: 8px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 16px; }
+        .card h3 { font-size: 15px; font-weight: 600; color: #202124; margin-bottom: 14px; border-bottom: 1px solid #f0f0f0; padding-bottom: 8px; }
+
+        .layout-options { display: flex; gap: 12px; margin-bottom: 16px; }
+        .layout-option { flex: 1; padding: 14px; border: 2px solid #dadce0; border-radius: 8px; text-align: center; cursor: pointer; transition: all 0.2s; }
+        .layout-option:hover { border-color: #1a73e8; }
+        .layout-option.active { border-color: #1a73e8; background: #e8f0fe; }
+        .layout-option .opt-title { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+        .layout-option .opt-desc { font-size: 12px; color: #5f6368; }
+
+        .session-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+        .session-toolbar .count { font-size: 13px; color: #5f6368; }
+        .session-toolbar .count span { font-weight: 600; color: #1a73e8; }
+
+        .session-list { max-height: 320px; overflow-y: auto; border: 1px solid #e8eaed; border-radius: 6px; }
+        .session-item { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid #f5f5f5; cursor: pointer; }
+        .session-item:hover { background: #f8f9fa; }
+        .session-item.exported { background: #f0fdf4; }
+        .session-item input[type="checkbox"] { flex-shrink: 0; width: 16px; height: 16px; }
+        .session-info { flex: 1; min-width: 0; }
+        .session-filename { font-size: 13px; font-weight: 500; color: #202124; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .session-meta { font-size: 12px; color: #5f6368; margin-top: 2px; }
+        .session-time { font-size: 11px; color: #9aa0a6; margin-top: 1px; }
+
+        .empty-tip { text-align: center; color: #9aa0a6; padding: 40px; font-size: 14px; }
+
+        .layout-summary { display: flex; align-items: center; justify-content: space-between; margin-top: 16px; }
+        .layout-summary .capacity { font-size: 13px; color: #5f6368; }
+        .layout-summary .capacity span { font-weight: 600; color: #1a73e8; }
+
+        .download-section { display: flex; gap: 12px; margin-top: 14px; }
+        .download-section .btn { flex: 1; text-align: center; font-size: 14px; font-weight: 600; padding: 10px; }
+
+        .hidden { display: none !important; }
+
+        .layout-toast-container { position: fixed; top: 20px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 10px; pointer-events: none; }
+        .layout-toast { pointer-events: auto; padding: 12px 18px; border-radius: 8px; font-size: 13px; color: #fff; transform: translateX(120%); opacity: 0; transition: all 0.3s; }
+        .layout-toast.show { transform: translateX(0); opacity: 1; }
+        .layout-toast.success { background: #0d652d; }
+        .layout-toast.error { background: #d93025; }
+        .layout-toast.warning { background: #e8a500; }
+    </style>
+</head>
+<body>
+    <div class="layout-toast-container" id="layoutToastContainer"></div>
+
+    <div class="header">
+        <h1>📄 A4 批量排版</h1>
+        <button class="btn btn-secondary" id="backToMainBtn">← 返回主页</button>
+    </div>
+
+    <div class="main">
+        <div class="card">
+            <h3>📐 选择版式</h3>
+            <div class="layout-options">
+                <div class="layout-option active" data-type="one_inch">
+                    <div class="opt-title">纯一寸</div>
+                    <div class="opt-desc">8 张 / A4</div>
+                </div>
+                <div class="layout-option" data-type="two_inch">
+                    <div class="opt-title">纯二寸</div>
+                    <div class="opt-desc">4 张 / A4</div>
+                </div>
+                <div class="layout-option" data-type="mixed">
+                    <div class="opt-title">一寸 + 二寸</div>
+                    <div class="opt-desc">混排 / A4</div>
+                </div>
+            </div>
+            <div class="layout-summary">
+                <div class="capacity">当前版式容量：<span id="layoutCapacity">8</span> 张/A4</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h3>📷 选择会话照片</h3>
+            <div class="session-toolbar">
+                <button class="btn btn-light btn-sm" id="selectAllBtn">全选</button>
+                <button class="btn btn-light btn-sm" id="deselectAllBtn">取消全选</button>
+                <div class="count">已选 <span id="selectedCount">0</span> 个</div>
+            </div>
+            <div class="session-list" id="sessionList">
+                <div class="empty-tip">加载中...</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h3>🚀 生成排版</h3>
+            <button class="btn btn-primary" id="layoutSubmitBtn" disabled style="width:100%;font-size:14px;font-weight:600;padding:10px;">生成排版</button>
+            <div class="download-section hidden" id="downloadSection">
+                <button class="btn btn-success" id="downloadPdfBtn">📥 下载 PDF (300 DPI)</button>
+                <button class="btn btn-primary" id="downloadJpgBtn">📥 下载 JPG (300 DPI)</button>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="layout.js"></script>
+</body>
+</html>
