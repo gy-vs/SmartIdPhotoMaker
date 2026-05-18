@@ -1,0 +1,44 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: idphoto-backend
+    restart: unless-stopped
+    volumes:
+      - backend-uploads:/app/uploads
+      - backend-output:/app/output
+    environment:
+      - APP_ENV=${APP_ENV:-production}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - MAX_FILE_SIZE=${MAX_FILE_SIZE:-10485760}
+      - MAX_SESSIONS=${MAX_SESSIONS:-100}
+      - SESSION_EXPIRE_SECONDS=${SESSION_EXPIRE_SECONDS:-1800}
+      - FACE_DETECTION_CONFIDENCE=${FACE_DETECTION_CONFIDENCE:-0.5}
+      - JWT_SECRET=${JWT_SECRET:-idphoto-jwt-secret-change-in-production}
+      - JWT_EXPIRE_SECONDS=${JWT_EXPIRE_SECONDS:-86400}
+    expose:
+      - "5000"
+    networks:
+      - idphoto-net
+
+  frontend-admin:
+    build:
+      context: ./frontend-admin
+      dockerfile: Dockerfile
+    container_name: idphoto-frontend-admin
+    restart: unless-stopped
+    ports:
+      - "8081:80"
+    depends_on:
+      - backend
+    networks:
+      - idphoto-net
+
+volumes:
+  backend-uploads:
+  backend-output:
+
+networks:
+  idphoto-net:
+    driver: bridge
