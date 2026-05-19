@@ -116,6 +116,18 @@
         .status-badge.error { background: #fce8e6; color: #c5221f; }
         .history-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.3); z-index: 1499; opacity: 0; transition: opacity 0.3s; }
         .history-overlay.show { opacity: 1; }
+        .history-item .print-badge { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 11px; background: #e8f0fe; color: #1a73e8; margin-left: 6px; }
+        .history-item.print-selected { background: #e8f0fe; border-left: 3px solid #1a73e8; }
+
+        /* 批量排版工具栏 */
+        .print-toolbar { padding: 10px 20px; background: #e8f0fe; border-bottom: 1px solid #d2e3fc; display: none; flex-direction: column; gap: 8px; }
+        .print-toolbar.show { display: flex; }
+        .print-toolbar .print-info { font-size: 13px; color: #1a73e8; font-weight: 500; }
+        .print-toolbar .print-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+        .print-toolbar .print-controls label { font-size: 13px; color: #333; }
+        .print-toolbar .print-controls select { padding: 4px 10px; font-size: 13px; border: 1px solid #dadce0; border-radius: 4px; outline: none; }
+        .print-toolbar .print-actions { display: flex; gap: 8px; }
+        .print-toolbar .btn { padding: 6px 12px; font-size: 12px; }
 
         /* Toast 通知 */
         .toast-container { position: fixed; top: 20px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 10px; pointer-events: none; }
@@ -161,7 +173,7 @@
                 <button class="btn btn-primary btn-block btn-lg" id="authSubmitBtn" onclick="handleAuth()">登 录</button>
             </div>
             <div class="switch-link" id="authSwitch">
-                还没有账号？<a onclick="toggleAuthMode()">立即注册</a>
+                还没有账号？<a data-action="switch">立即注册</a>
             </div>
         </div>
     </div>
@@ -175,11 +187,12 @@
             <button class="btn btn-secondary" onclick="resetPhoto()">🔄 重置</button>
             <button class="btn btn-success" onclick="exportPhoto()">💾 导出</button>
             <button class="btn btn-light" onclick="showHistory()">📋 历史记录</button>
+            <button class="btn btn-light" onclick="togglePrintMode()">📄 批量排版</button>
             <button class="btn btn-light" onclick="logout()">退出登录</button>
         </div>
     </div>
 
-    <input type="file" id="fileInput" accept="image/*" style="display:none" onchange="handleFileSelect(event)">
+    <input type="file" id="fileInput" accept="image/*" style="display:none" data-handler="handleFileSelect">
 
     <!-- 主体 -->
     <div class="main">
@@ -258,6 +271,23 @@
             <button class="tab" id="tabSessions" onclick="switchHistoryTab('sessions')">会话列表</button>
             <button class="tab" id="tabStats" onclick="switchHistoryTab('stats')">统计信息</button>
         </div>
+        <div class="print-toolbar" id="printToolbar">
+            <div class="print-info" id="printInfo">已选中 0 张照片</div>
+            <div class="print-controls">
+                <label>版式：</label>
+                <select id="printLayoutSelect">
+                    <option value="one_inch">一寸 (25×35mm)</option>
+                    <option value="two_inch">二寸 (35×49mm)</option>
+                    <option value="mixed">一寸 + 二寸混排</option>
+                </select>
+            </div>
+            <div class="print-actions">
+                <button class="btn btn-primary" onclick="submitPrinting()">📄 生成排版并下载 PDF</button>
+                <button class="btn btn-success" onclick="submitPrintingJpg()">🖼️ 生成排版并下载 JPG</button>
+                <button class="btn btn-secondary" onclick="clearPrintSelection()">清除选择</button>
+                <button class="btn btn-light" onclick="togglePrintMode()">取消选择</button>
+            </div>
+        </div>
         <div class="history-stats hidden" id="historyStats">
             <div class="stat-item"><span class="stat-num" id="statSessions">0</span>上传次数</div>
             <div class="stat-item"><span class="stat-num" id="statOps">0</span>操作次数</div>
@@ -275,475 +305,11 @@
             <div class="modal-title" id="modalTitle">提示</div>
             <div class="modal-msg" id="modalMsg"></div>
             <div class="modal-btns" id="modalBtns">
-                <button class="btn btn-primary" onclick="closeModal()">确定</button>
+                <button class="btn btn-primary" data-close="true">确定</button>
             </div>
         </div>
     </div>
 
-    <script>
-        const API = '';
-        let sessionId = null;
-        let modalResolve = null;
-        let authToken = localStorage.getItem('idphoto_token') || null;
-        let currentUser = localStorage.getItem('idphoto_user') || null;
-        let isLoginMode = true;
-
-        /* ---- 认证相关 ---- */
-        function checkAuth() {
-            if (authToken && currentUser) {
-                document.getElementById('authPage').classList.add('hidden');
-                document.getElementById('userInfo').textContent = '👤 ' + currentUser;
-            } else {
-                document.getElementById('authPage').classList.remove('hidden');
-            }
-        }
-
-        function toggleAuthMode() {
-            isLoginMode = !isLoginMode;
-            document.getElementById('authError').textContent = '';
-            document.getElementById('authUsername').value = '';
-            document.getElementById('authPassword').value = '';
-            if (isLoginMode) {
-                document.getElementById('authSubtitle').textContent = '登录后开始制作证件照';
-                document.getElementById('authSubmitBtn').textContent = '登 录';
-                document.getElementById('authSwitch').innerHTML = '还没有账号？<a onclick="toggleAuthMode()">立即注册</a>';
-                document.getElementById('authPassword').setAttribute('autocomplete', 'current-password');
-            } else {
-                document.getElementById('authSubtitle').textContent = '注册新账号';
-                document.getElementById('authSubmitBtn').textContent = '注 册';
-                document.getElementById('authSwitch').innerHTML = '已有账号？<a onclick="toggleAuthMode()">返回登录</a>';
-                document.getElementById('authPassword').setAttribute('autocomplete', 'new-password');
-            }
-        }
-
-        async function handleAuth() {
-            const username = document.getElementById('authUsername').value.trim();
-            const password = document.getElementById('authPassword').value;
-            const errorEl = document.getElementById('authError');
-            errorEl.textContent = '';
-
-            if (!username) { errorEl.textContent = '请输入用户名'; return; }
-            if (!password) { errorEl.textContent = '请输入密码'; return; }
-
-            const url = isLoginMode ? API + '/api/login' : API + '/api/register';
-            const btn = document.getElementById('authSubmitBtn');
-            btn.disabled = true;
-            btn.textContent = isLoginMode ? '登录中...' : '注册中...';
-
-            try {
-                const res = await fetch(url, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username, password }),
-                });
-                const data = await res.json();
-
-                if (!res.ok || data.error) {
-                    errorEl.textContent = data.error || '操作失败，请重试';
-                    btn.disabled = false;
-                    btn.textContent = isLoginMode ? '登 录' : '注 册';
-                    return;
-                }
-
-                if (isLoginMode) {
-                    // 登录成功
-                    authToken = data.token;
-                    currentUser = data.username;
-                    localStorage.setItem('idphoto_token', authToken);
-                    localStorage.setItem('idphoto_user', currentUser);
-                    checkAuth();
-                } else {
-                    // 注册成功，切换到登录
-                    errorEl.textContent = '';
-                    isLoginMode = true;
-                    toggleAuthMode();
-                    toggleAuthMode(); // 重置为登录模式
-                    document.getElementById('authError').style.color = '#0d652d';
-                    document.getElementById('authError').textContent = '注册成功，请登录';
-                    setTimeout(() => {
-                        document.getElementById('authError').style.color = '#d93025';
-                        document.getElementById('authError').textContent = '';
-                    }, 3000);
-                }
-            } catch (err) {
-                errorEl.textContent = '网络连接失败，请检查网络后重试';
-            }
-            btn.disabled = false;
-            btn.textContent = isLoginMode ? '登 录' : '注 册';
-        }
-
-        function logout() {
-            authToken = null;
-            currentUser = null;
-            sessionId = null;
-            localStorage.removeItem('idphoto_token');
-            localStorage.removeItem('idphoto_user');
-            checkAuth();
-        }
-
-        function authHeaders() {
-            return authToken ? { 'Authorization': 'Bearer ' + authToken } : {};
-        }
-
-        function handleAuthError(res) {
-            if (res.status === 401) {
-                logout();
-                showModal('登录已过期，请重新登录', {type:'warning', title:'认证失效'});
-                return true;
-            }
-            return false;
-        }
-
-        // 回车键提交
-        document.getElementById('authUsername').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('authPassword').focus(); });
-        document.getElementById('authPassword').addEventListener('keydown', e => { if (e.key === 'Enter') handleAuth(); });
-
-        // 页面加载时检查认证状态
-        checkAuth();
-
-        /* ---- 历史记录 ---- */
-        const actionLabels = {
-            upload: '📂 上传照片', replace_background: '🎨 替换背景',
-            remove_glasses: '👓 消除眼镜', enhance: '✨ 画质增强',
-            crop: '✂️ 裁剪证件照', auto: '🚀 一键处理',
-            reset: '🔄 重置', detect: '👤 人脸检测', export: '💾 导出',
-        };
-
-        async function showHistory() {
-            document.getElementById('historyOverlay').classList.remove('hidden');
-            setTimeout(() => document.getElementById('historyOverlay').classList.add('show'), 10);
-            document.getElementById('historyPanel').classList.add('open');
-            switchHistoryTab('all');
-        }
-
-        function closeHistory() {
-            document.getElementById('historyPanel').classList.remove('open');
-            document.getElementById('historyOverlay').classList.remove('show');
-            setTimeout(() => document.getElementById('historyOverlay').classList.add('hidden'), 300);
-        }
-
-        function switchHistoryTab(tab) {
-            document.querySelectorAll('.history-tabs .tab').forEach(t => t.classList.remove('active'));
-            document.getElementById('tabAll').classList.toggle('active', tab === 'all');
-            document.getElementById('tabSessions').classList.toggle('active', tab === 'sessions');
-            document.getElementById('tabStats').classList.toggle('active', tab === 'stats');
-            document.getElementById('historyStats').classList.toggle('hidden', tab !== 'stats');
-
-            if (tab === 'all') loadHistory('all');
-            else if (tab === 'sessions') loadHistory('sessions');
-            else if (tab === 'stats') loadStats();
-        }
-
-        async function loadHistory(type) {
-            const listEl = document.getElementById('historyList');
-            listEl.innerHTML = '<div style="text-align:center;color:#9aa0a6;padding:40px">加载中...</div>';
-
-            try {
-                const res = await fetch(API + '/api/history?type=' + type + '&limit=50', {
-                    headers: authHeaders(),
-                });
-                if (handleAuthError(res)) return;
-                const data = await res.json();
-
-                if (type === 'sessions') {
-                    const sessions = data.sessions || [];
-                    if (sessions.length === 0) {
-                        listEl.innerHTML = '<div style="text-align:center;color:#9aa0a6;padding:40px">暂无会话记录</div>';
-                        return;
-                    }
-                    listEl.innerHTML = sessions.map(s => `
-                        <div class="history-item">
-                            <div class="action-file">${s.filename || '未知文件'}</div>
-                            <div class="action-params">
-                                ${s.has_face ? '✅ 检测到人脸' : '❌ 未检测到人脸'}
-                                ${s.confidence ? ' (置信度: ' + s.confidence.toFixed(2) + ')' : ''}
-                                ${s.has_glasses ? ' 👓 佩戴眼镜' : ''}
-                            </div>
-                            <div class="action-time">${s.created_at}</div>
-                        </div>
-                    `).join('');
-                } else {
-                    const history = data.history || [];
-                    if (history.length === 0) {
-                        listEl.innerHTML = '<div style="text-align:center;color:#9aa0a6;padding:40px">暂无操作记录</div>';
-                        return;
-                    }
-                    listEl.innerHTML = history.map(h => `
-                        <div class="history-item">
-                            <div>
-                                <span class="action-name">${actionLabels[h.action] || h.action}</span>
-                                <span class="status-badge ${h.status}">${h.status === 'success' ? '成功' : '失败'}</span>
-                            </div>
-                            ${h.params ? '<div class="action-params">' + h.params + '</div>' : ''}
-                            ${h.filename ? '<div class="action-file">' + h.filename + '</div>' : ''}
-                            <div class="action-time">${h.created_at}</div>
-                        </div>
-                    `).join('');
-                }
-            } catch (err) {
-                listEl.innerHTML = '<div style="text-align:center;color:#d93025;padding:40px">加载失败，请重试</div>';
-            }
-        }
-
-        async function loadStats() {
-            try {
-                const res = await fetch(API + '/api/history?type=stats', {
-                    headers: authHeaders(),
-                });
-                if (handleAuthError(res)) return;
-                const data = await res.json();
-                const stats = data.stats || {};
-                document.getElementById('statSessions').textContent = stats.session_count || 0;
-                document.getElementById('statOps').textContent = stats.history_count || 0;
-                document.getElementById('statExports').textContent = stats.export_count || 0;
-                document.getElementById('historyList').innerHTML = '<div style="text-align:center;color:#9aa0a6;padding:40px">统计信息已显示在上方</div>';
-            } catch (err) {
-                document.getElementById('historyList').innerHTML = '<div style="text-align:center;color:#d93025;padding:40px">加载失败，请重试</div>';
-            }
-        }
-
-        /* ---- Toast 轻量通知 ---- */
-        function showToast(msg, { type = 'info', title, duration = 3500 } = {}) {
-            const container = document.getElementById('toastContainer');
-            const toast = document.createElement('div');
-            toast.className = 'toast ' + type;
-            const icon = iconMap[type] || iconMap.info;
-            const titleText = title || { success:'成功', error:'错误', warning:'提示', info:'提示' }[type] || '提示';
-            toast.innerHTML = `
-                <span class="toast-icon">${icon}</span>
-                <div class="toast-body">
-                    <div class="toast-title">${titleText}</div>
-                    <div class="toast-msg">${msg}</div>
-                </div>
-                <button class="toast-close" onclick="this.parentElement.remove()">&times;</button>
-                <div class="toast-progress" style="width:100%;transition:width ${duration}ms linear"></div>
-            `;
-            container.appendChild(toast);
-            requestAnimationFrame(() => {
-                toast.classList.add('show');
-                toast.querySelector('.toast-progress').style.width = '0%';
-            });
-            const timer = setTimeout(() => {
-                toast.classList.remove('show');
-                toast.classList.add('hide');
-                setTimeout(() => toast.remove(), 400);
-            }, duration);
-            toast.querySelector('.toast-close').addEventListener('click', () => {
-                clearTimeout(timer);
-                toast.classList.remove('show');
-                toast.classList.add('hide');
-                setTimeout(() => toast.remove(), 400);
-            });
-        }
-
-        /* ---- 自定义弹窗 ---- */
-        const iconMap = { success: '✅', error: '❌', warning: '⚠️', info: 'ℹ️' };
-
-        function showModal(msg, { type = 'info', title, confirm = false } = {}) {
-            return new Promise(resolve => {
-                modalResolve = resolve;
-                document.getElementById('modalIcon').textContent = iconMap[type] || iconMap.info;
-                document.getElementById('modalIcon').className = 'modal-icon ' + type;
-                document.getElementById('modalTitle').textContent = title || { success:'成功', error:'错误', warning:'提示', info:'提示' }[type] || '提示';
-                document.getElementById('modalMsg').textContent = msg;
-
-                const btnsEl = document.getElementById('modalBtns');
-                if (confirm) {
-                    btnsEl.innerHTML = '<button class="btn btn-secondary" onclick="closeModal(false)">取消</button><button class="btn btn-primary" onclick="closeModal(true)">确定</button>';
-                } else {
-                    btnsEl.innerHTML = '<button class="btn btn-primary" onclick="closeModal(true)">确定</button>';
-                }
-
-                const mask = document.getElementById('modalMask');
-                mask.classList.remove('hidden');
-                requestAnimationFrame(() => mask.classList.add('show'));
-            });
-        }
-
-        function closeModal(result = true) {
-            const mask = document.getElementById('modalMask');
-            mask.classList.remove('show');
-            setTimeout(() => mask.classList.add('hidden'), 200);
-            if (modalResolve) { modalResolve(result); modalResolve = null; }
-        }
-
-        function modalOutsideClick(e) {
-            if (e.target === e.currentTarget) closeModal(false);
-        }
-
-        // 上传相关
-        function triggerUpload() { document.getElementById('fileInput').click(); }
-
-        // 拖拽上传
-        const uploadZone = document.getElementById('uploadZone');
-        uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('dragover'); });
-        uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragover'));
-        uploadZone.addEventListener('drop', e => {
-            e.preventDefault();
-            uploadZone.classList.remove('dragover');
-            if (e.dataTransfer.files.length > 0) uploadFile(e.dataTransfer.files[0]);
-        });
-
-        function handleFileSelect(e) {
-            if (e.target.files.length > 0) uploadFile(e.target.files[0]);
-        }
-
-        async function uploadFile(file) {
-            // 前端校验：文件类型
-            const allowedTypes = ['image/jpeg', 'image/png', 'image/bmp', 'image/webp'];
-            if (!allowedTypes.includes(file.type)) {
-                showModal('不支持的文件格式，请上传 JPG/PNG/BMP/WebP 格式的图片', {type:'warning', title:'文件格式错误'});
-                return;
-            }
-
-            // 前端校验：文件大小（10MB）
-            const maxSize = 10 * 1024 * 1024;
-            if (file.size > maxSize) {
-                const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
-                showModal(`文件大小 (${sizeMB}MB) 超过限制，请上传不超过 10MB 的图片`, {type:'warning', title:'文件过大'});
-                return;
-            }
-
-            setStatus('正在上传并分析照片...');
-            showLoading(true);
-
-            const formData = new FormData();
-            formData.append('file', file);
-
-            try {
-                const res = await fetch(API + '/api/upload', { method: 'POST', body: formData, headers: authHeaders() });
-                if (handleAuthError(res)) { showLoading(false); return; }
-                const data = await res.json();
-
-                if (data.error) { showModal(data.error, {type:'error', title:'上传失败'}); setStatus('上传失败'); showLoading(false); return; }
-
-                sessionId = data.session_id;
-
-                // 显示原图
-                showImage('originalImg', data.original);
-                document.getElementById('uploadZone').classList.add('hidden');
-                document.getElementById('originalImg').classList.remove('hidden');
-
-                // 显示预览
-                showImage('resultImg', data.preview);
-                document.getElementById('resultPlaceholder').classList.add('hidden');
-                document.getElementById('resultImg').classList.remove('hidden');
-
-                // 更新日志和状态
-                updateLog(data.log);
-                let msg = data.has_face
-                    ? `已加载图片，检测到人脸 (置信度: ${data.confidence})${data.has_glasses ? '，检测到佩戴眼镜' : ''}`
-                    : '已加载图片，但未检测到人脸，请更换照片';
-                setStatus(msg);
-
-                if (!data.has_face) showModal('未检测到人脸，建议上传光线充足、正面清晰的半身照', {type:'warning', title:'温馨提示'});
-            } catch (err) {
-                showModal('网络连接失败，请检查网络后重试', {type:'error', title:'上传失败'});
-                setStatus('上传失败');
-            }
-            showLoading(false);
-        }
-
-        async function doAction(action) {
-            if (!sessionId) { showModal('请先上传一张照片，再进行处理操作', {type:'warning', title:'温馨提示'}); return; }
-
-            const bgColor = document.querySelector('input[name="bgColor"]:checked').value;
-            const size = document.querySelector('input[name="photoSize"]:checked').value;
-
-            setStatus('正在处理中，请稍候...');
-            showLoading(true);
-
-            const url = action === 'detect' ? API + '/api/detect' : API + '/api/process';
-            const body = { session_id: sessionId, action, bg_color: bgColor, size };
-
-            try {
-                const res = await fetch(url, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-                    body: JSON.stringify(body),
-                });
-                if (handleAuthError(res)) { showLoading(false); return; }
-                const data = await res.json();
-
-                if (data.error) {
-                    const actionTips = {
-                        detect: '人脸检测失败，请确认照片中包含清晰的正面人脸',
-                        replace_background: '背景替换失败，请尝试重新上传照片',
-                        remove_glasses: '眼镜消除失败，请确认照片中人脸清晰可见',
-                        enhance: '画质增强失败，请尝试重新上传照片',
-                        crop: '裁剪失败，请先确认已检测到人脸',
-                        auto: '一键处理失败，请尝试分步操作排查问题',
-                        reset: '重置失败，请刷新页面后重试',
-                    };
-                    const tip = actionTips[action] || data.error;
-                    showModal(tip, {type:'error', title:'处理失败'});
-                    setStatus('处理失败');
-                    showLoading(false);
-                    return;
-                }
-
-                showImage('resultImg', data.preview);
-                document.getElementById('resultPlaceholder').classList.add('hidden');
-                document.getElementById('resultImg').classList.remove('hidden');
-                updateLog(data.log);
-
-                const actionNames = {
-                    detect: '人脸检测完成', replace_background: '背景替换完成',
-                    remove_glasses: '眼镜消除完成', enhance: '画质增强完成',
-                    crop: '裁剪完成', auto: '一键处理完成', reset: '已重置',
-                };
-                setStatus(actionNames[action] || '处理完成');
-            } catch (err) {
-                showModal('网络连接失败，请检查网络后重试', {type:'error', title:'处理失败'});
-                setStatus('处理出错');
-            }
-            showLoading(false);
-        }
-
-        async function resetPhoto() {
-            if (!sessionId) return;
-            await doAction('reset');
-        }
-
-        async function exportPhoto() {
-            if (!sessionId) { showModal('请先上传并处理照片，再进行导出', {type:'warning', title:'温馨提示'}); return; }
-            setStatus('正在导出...');
-            try {
-                const res = await fetch(API + '/api/export', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-                    body: JSON.stringify({ session_id: sessionId, format: 'jpg' }),
-                });
-                if (handleAuthError(res)) return;
-                if (!res.ok) { const d = await res.json(); showModal(d.error || '导出失败，请稍后重试', {type:'error', title:'导出失败'}); return; }
-                const blob = await res.blob();
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url; a.download = '证件照.jpg'; a.click();
-                URL.revokeObjectURL(url);
-                setStatus('导出成功');
-            } catch (err) {
-                showModal('网络连接失败，请检查网络后重试', {type:'error', title:'导出失败'});
-            }
-        }
-
-        function showImage(id, base64Data) {
-            document.getElementById(id).src = 'data:image/jpeg;base64,' + base64Data;
-        }
-
-        function showLoading(show) {
-            document.getElementById('loadingOverlay').classList.toggle('hidden', !show);
-        }
-
-        function setStatus(msg) {
-            document.getElementById('statusBar').textContent = msg;
-        }
-
-        function updateLog(text) {
-            const el = document.getElementById('logBox');
-            el.textContent = text;
-            el.scrollTop = el.scrollHeight;
-        }
-    </script>
+    <script type="module" src="/js/main.js"></script>
 </body>
 </html>

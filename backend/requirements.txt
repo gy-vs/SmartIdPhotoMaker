@@ -13,6 +13,12 @@ numpy==1.26.4
 # AI 人脸检测 / 人像分割
 mediapipe==0.10.18
 
+# 图像合成（Pillow 用于排版位图输出，OpenCV 已有）
+Pillow==10.4.0
+
+# PDF 生成（A4 批量排版导出）
+reportlab==4.2.2
+
 # 用户认证
 PyJWT==2.10.1
 bcrypt==4.2.1
