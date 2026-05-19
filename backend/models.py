@@ -47,6 +47,7 @@ def init_db():
                 has_face INTEGER DEFAULT 0,
                 confidence REAL,
                 has_glasses INTEGER DEFAULT 0,
+                used_for_printing INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -160,12 +161,31 @@ def get_user_sessions(username: str, limit: int = 20, offset: int = 0) -> list:
     conn = get_db()
     try:
         rows = conn.execute(
-            """SELECT sid, filename, has_face, confidence, has_glasses, created_at, updated_at
+            """SELECT sid, filename, has_face, confidence, has_glasses, used_for_printing, created_at, updated_at
                FROM sessions WHERE username = ?
                ORDER BY created_at DESC LIMIT ? OFFSET ?""",
             (username, limit, offset),
         ).fetchall()
         return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def update_session_print_flag(sid: str, used_for_printing: bool = True) -> None:
+    """
+    更新会话的已用于排版导出标记。
+
+    Args:
+        sid: 会话 ID
+        used_for_printing: 是否已用于排版导出
+    """
+    conn = get_db()
+    try:
+        conn.execute(
+            "UPDATE sessions SET used_for_printing = ? WHERE sid = ?",
+            (1 if used_for_printing else 0, sid),
+        )
+        conn.commit()
     finally:
         conn.close()
 

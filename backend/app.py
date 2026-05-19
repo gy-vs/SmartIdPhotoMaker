@@ -9,7 +9,7 @@ import base64
 import logging
 import time
 import threading
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, send_from_directory
 from flask_cors import CORS
 import cv2
 import numpy as np
@@ -21,6 +21,7 @@ from models import (
     get_user_sessions, get_session_history, get_user_history, get_user_stats,
 )
 from auth import login_required, register_user, login_user
+from printing import build_printing_task, STRATEGY_MAP
 
 # 加载配置
 cfg = get_config()
@@ -463,6 +464,116 @@ def get_session_detail(sid):
     except Exception as e:
         logger.error("获取会话历史失败: sid=%s, %s", sid, e, exc_info=True)
         return jsonify({"error": "获取会话历史失败，请稍后重试"}), 500
+
+
+@app.route("/api/printing/layouts", methods=["GET"])
+@login_required
+def list_printing_layouts():
+    """
+    列出所有可用的版式策略。
+
+    Returns:
+        dict: {"layouts": [{"key": str, "name": str, "description": str}]}
+    """
+    layouts = []
+    for key, cls in STRATEGY_MAP.items():
+        instance = cls()
+        layouts.append({
+            "key": key,
+            "name": instance.name,
+            "description": instance.description(),
+        })
+    return jsonify({"layouts": layouts})
+
+
+@app.route("/api/printing/export", methods=["POST"])
+@login_required
+def print_photo_batch():
+    """
+    批量排版导出：接收 session_id 列表 + 版式参数，返回 PDF + JPG 下载链接。
+
+    Request JSON:
+        session_ids: List[str] 选中的会话 ID
+        layout: str 版式 key (one_inch / two_inch / mixed)
+
+    Returns:
+        dict: {"pdf_url": str, "jpg_url": str, "pdf_name": str, "jpg_name": str,
+               "count": int, "layout": str}
+    """
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "请求体不能为空"}), 400
+
+    session_ids = data.get("session_ids")
+    layout_key = data.get("layout", "one_inch")
+
+    if not session_ids or not isinstance(session_ids, list) or len(session_ids) == 0:
+        return jsonify({"error": "session_ids 不能为空且必须为非空数组"}), 400
+
+    if layout_key not in STRATEGY_MAP:
+        return jsonify({"error": f"不支持的版式: {layout_key}，可选值: {', '.join(STRATEGY_MAP.keys())}"}), 400
+
+    username = request.current_user
+    try:
+        pdf_path, jpg_path = build_printing_task(session_ids, layout_key, username)
+    except ValueError as e:
+        logger.warning("排版参数错误: %s", e)
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error("排版导出失败: %s", e, exc_info=True)
+        return jsonify({"error": f"排版导出失败: {e}"}), 500
+
+    pdf_name = os.path.basename(pdf_path)
+    jpg_name = os.path.basename(jpg_path)
+
+    for sid in session_ids:
+        try:
+            add_history(sid, username, "print", f"layout={layout_key}")
+        except Exception:
+            pass
+
+    logger.info("批量排版导出成功: user=%s layout=%s count=%d", username, layout_key, len(session_ids))
+    return jsonify({
+        "pdf_url": f"/api/printing/download/{pdf_name}",
+        "jpg_url": f"/api/printing/download/{jpg_name}",
+        "pdf_name": pdf_name,
+        "jpg_name": jpg_name,
+        "count": len(session_ids),
+        "layout": layout_key,
+    })
+
+
+@app.route("/api/printing/download/<path:filename>", methods=["GET"])
+@login_required
+def download_printing(filename):
+    """
+    下载排版导出的文件（PDF 或 JPG）。
+
+    Args:
+        filename: 要下载的文件名
+
+    Returns:
+        文件流
+    """
+    if ".." in filename or "/" in filename or "\\" in filename:
+        logger.warning("非法的下载文件名: %s", filename)
+        return jsonify({"error": "非法文件名"}), 400
+
+    allowed_exts = {".pdf", ".jpg", ".jpeg"}
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in allowed_exts:
+        return jsonify({"error": "不支持的文件类型"}), 400
+
+    filepath = os.path.join(cfg.OUTPUT_DIR, filename)
+    if not os.path.exists(filepath):
+        return jsonify({"error": "文件不存在或已过期"}), 404
+
+    download_name = f"A4_排版.{ext.lstrip('.')}"
+    mimetype = "application/pdf" if ext == ".pdf" else "image/jpeg"
+    return send_file(
+        filepath, as_attachment=True, download_name=download_name,
+        mimetype=mimetype,
+    )
 
 
 if __name__ == "__main__":
