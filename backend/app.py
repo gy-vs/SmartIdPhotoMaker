@@ -4,6 +4,7 @@
 """
 
 import os
+import io
 import uuid
 import base64
 import logging
@@ -19,7 +20,10 @@ from config import get_config
 from models import (
     init_db, create_session, update_session_time, add_history,
     get_user_sessions, get_session_history, get_user_history, get_user_stats,
+    get_session, mark_sessions_for_printing, create_print_task,
+    get_print_task, get_user_print_tasks,
 )
+from printing import generate_print_layout, get_strategy
 from auth import login_required, register_user, login_user
 
 # 加载配置
@@ -463,6 +467,232 @@ def get_session_detail(sid):
     except Exception as e:
         logger.error("获取会话历史失败: sid=%s, %s", sid, e, exc_info=True)
         return jsonify({"error": "获取会话历史失败，请稍后重试"}), 500
+
+
+@app.route("/api/print/layouts", methods=["GET"])
+@login_required
+def get_available_layouts():
+    """获取支持的排版版式列表"""
+    try:
+        layouts = []
+        for key in ["one_inch", "two_inch", "mixed"]:
+            strategy = get_strategy(key)
+            layouts.append({
+                "type": key,
+                "name": strategy.get_layout_name(),
+                "max_photos": strategy.get_max_photos(),
+            })
+        return jsonify({"layouts": layouts})
+    except Exception as e:
+        logger.error("获取版式列表失败: %s", e, exc_info=True)
+        return jsonify({"error": "获取版式列表失败"}), 500
+
+
+@app.route("/api/print/preview", methods=["POST"])
+@login_required
+def preview_print_layout():
+    """预览排版效果（返回合成后的 JPG base64）"""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "缺少请求参数"}), 400
+
+    session_ids = data.get("session_ids", [])
+    layout_type = data.get("layout_type", "one_inch")
+
+    if not session_ids:
+        return jsonify({"error": "请选择至少一张照片"}), 400
+
+    if not isinstance(session_ids, list):
+        return jsonify({"error": "session_ids 必须是数组"}), 400
+
+    username = request.current_user
+
+    try:
+        strategy = get_strategy(layout_type)
+        max_photos = strategy.get_max_photos()
+        if len(session_ids) > max_photos:
+            return jsonify({
+                "error": f"照片数量超过限制（最大 {max_photos} 张）"
+            }), 400
+
+        photo_paths = []
+        for sid in session_ids:
+            session = get_session(sid)
+            if not session:
+                return jsonify({"error": f"会话不存在: {sid}"}), 404
+            if session["username"] != username:
+                return jsonify({"error": "无权访问其他用户的会话"}), 403
+
+            output_path = os.path.join(cfg.OUTPUT_DIR, f"{sid}_result.jpg")
+            if not os.path.exists(output_path):
+                output_path = os.path.join(cfg.OUTPUT_DIR, f"{sid}_result.png")
+            if not os.path.exists(output_path):
+                output_path = session["file_path"]
+                if not os.path.exists(output_path):
+                    return jsonify({
+                        "error": f"会话 {sid} 没有可用的照片文件"
+                    }), 404
+            photo_paths.append(output_path)
+
+        from printing import LayoutComposer
+        composer = LayoutComposer(strategy)
+        img = composer.compose_image(photo_paths)
+
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        import base64 as b64
+        img_base64 = b64.b64encode(buf.getvalue()).decode("utf-8")
+
+        return jsonify({
+            "preview": img_base64,
+            "layout_type": layout_type,
+            "layout_name": strategy.get_layout_name(),
+            "photo_count": len(photo_paths),
+            "max_photos": max_photos,
+        })
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error("预览排版失败: %s", e, exc_info=True)
+        return jsonify({"error": f"预览排版失败: {e}"}), 500
+
+
+@app.route("/api/print/generate", methods=["POST"])
+@login_required
+def generate_print_files():
+    """生成排版文件（PDF + JPG）"""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "缺少请求参数"}), 400
+
+    session_ids = data.get("session_ids", [])
+    layout_type = data.get("layout_type", "one_inch")
+    output_format = data.get("format", "both")
+
+    if not session_ids:
+        return jsonify({"error": "请选择至少一张照片"}), 400
+
+    if not isinstance(session_ids, list):
+        return jsonify({"error": "session_ids 必须是数组"}), 400
+
+    username = request.current_user
+
+    try:
+        strategy = get_strategy(layout_type)
+        max_photos = strategy.get_max_photos()
+        if len(session_ids) > max_photos:
+            return jsonify({
+                "error": f"照片数量超过限制（最大 {max_photos} 张）"
+            }), 400
+
+        photo_paths = []
+        for sid in session_ids:
+            session = get_session(sid)
+            if not session:
+                return jsonify({"error": f"会话不存在: {sid}"}), 404
+            if session["username"] != username:
+                return jsonify({"error": "无权访问其他用户的会话"}), 403
+
+            output_path = os.path.join(cfg.OUTPUT_DIR, f"{sid}_result.jpg")
+            if not os.path.exists(output_path):
+                output_path = os.path.join(cfg.OUTPUT_DIR, f"{sid}_result.png")
+            if not os.path.exists(output_path):
+                output_path = session["file_path"]
+                if not os.path.exists(output_path):
+                    return jsonify({
+                        "error": f"会话 {sid} 没有可用的照片文件"
+                    }), 404
+            photo_paths.append(output_path)
+
+        print_dir = os.path.join(cfg.OUTPUT_DIR, "print")
+        os.makedirs(print_dir, exist_ok=True)
+
+        pdf_path, jpg_path = generate_print_layout(
+            photo_paths=photo_paths,
+            layout_type=layout_type,
+            output_dir=print_dir,
+            output_format=output_format,
+        )
+
+        task_id = str(uuid.uuid4())[:12]
+        create_print_task(
+            task_id=task_id,
+            username=username,
+            layout_type=layout_type,
+            session_ids=session_ids,
+            pdf_path=pdf_path,
+            jpg_path=jpg_path,
+            status="completed",
+        )
+
+        mark_sessions_for_printing(session_ids)
+
+        for sid in session_ids:
+            add_history(sid, username, "print", layout_type)
+
+        result = {
+            "task_id": task_id,
+            "layout_type": layout_type,
+            "layout_name": strategy.get_layout_name(),
+            "photo_count": len(photo_paths),
+        }
+
+        if pdf_path:
+            result["pdf_url"] = f"/api/print/download/{task_id}/pdf"
+        if jpg_path:
+            result["jpg_url"] = f"/api/print/download/{task_id}/jpg"
+
+        logger.info("排版生成成功: task_id=%s, layout=%s, photos=%d",
+                    task_id, layout_type, len(photo_paths))
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error("生成排版文件失败: %s", e, exc_info=True)
+        return jsonify({"error": f"生成排版文件失败: {e}"}), 500
+
+
+@app.route("/api/print/download/<task_id>/<file_type>", methods=["GET"])
+@login_required
+def download_print_file(task_id: str, file_type: str):
+    """下载排版生成的文件"""
+    if file_type not in {"pdf", "jpg"}:
+        return jsonify({"error": "不支持的文件类型"}), 400
+
+    task = get_print_task(task_id)
+    if not task:
+        return jsonify({"error": "任务不存在"}), 404
+
+    if task["username"] != request.current_user:
+        return jsonify({"error": "无权下载"}), 403
+
+    file_path = task.get(f"{file_type}_path")
+    if not file_path or not os.path.exists(file_path):
+        return jsonify({"error": "文件不存在或已过期"}), 404
+
+    try:
+        download_name = f"证件照排版_{task['layout_type']}_{task_id}.{file_type}"
+        return send_file(file_path, as_attachment=True,
+                        download_name=download_name)
+    except Exception as e:
+        logger.error("下载文件失败: task_id=%s, %s", task_id, e, exc_info=True)
+        return jsonify({"error": "下载失败"}), 500
+
+
+@app.route("/api/print/tasks", methods=["GET"])
+@login_required
+def get_print_tasks():
+    """获取当前用户的排版任务列表"""
+    username = request.current_user
+    limit = min(int(request.args.get("limit", 20)), 100)
+    offset = int(request.args.get("offset", 0))
+
+    try:
+        tasks = get_user_print_tasks(username, limit, offset)
+        return jsonify({"tasks": tasks})
+    except Exception as e:
+        logger.error("获取排版任务列表失败: %s", e, exc_info=True)
+        return jsonify({"error": "获取排版任务列表失败"}), 500
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ import os
 import sqlite3
 import logging
 from datetime import datetime
+from typing import List
 
 from config import get_config
 
@@ -25,8 +26,19 @@ def get_db():
     return conn
 
 
+def _column_exists(table_name: str, column_name: str) -> bool:
+    """检查列是否存在"""
+    conn = get_db()
+    try:
+        cursor = conn.execute(f"PRAGMA table_info({table_name})")
+        columns = [row[1] for row in cursor.fetchall()]
+        return column_name in columns
+    finally:
+        conn.close()
+
+
 def init_db():
-    """初始化数据库表"""
+    """初始化数据库表并执行迁移"""
     conn = get_db()
     try:
         conn.executescript("""
@@ -47,8 +59,21 @@ def init_db():
                 has_face INTEGER DEFAULT 0,
                 confidence REAL,
                 has_glasses INTEGER DEFAULT 0,
+                used_for_printing INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS print_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT UNIQUE NOT NULL,
+                username TEXT NOT NULL,
+                layout_type TEXT NOT NULL,
+                session_ids TEXT NOT NULL,
+                pdf_path TEXT,
+                jpg_path TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
             CREATE TABLE IF NOT EXISTS history (
@@ -60,7 +85,18 @@ def init_db():
                 status TEXT NOT NULL DEFAULT 'success',
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
+        """)
 
+        if not _column_exists("sessions", "used_for_printing"):
+            try:
+                conn.execute(
+                    "ALTER TABLE sessions ADD COLUMN used_for_printing INTEGER DEFAULT 0"
+                )
+                logger.info("数据库迁移：已添加 sessions.used_for_printing 列")
+            except sqlite3.OperationalError as e:
+                logger.warning("添加列失败（可能已存在）：%s", e)
+
+        conn.executescript("""
             CREATE INDEX IF NOT EXISTS idx_sessions_username ON sessions(username);
             CREATE INDEX IF NOT EXISTS idx_sessions_sid ON sessions(sid);
             CREATE INDEX IF NOT EXISTS idx_history_username ON history(username);
@@ -160,7 +196,8 @@ def get_user_sessions(username: str, limit: int = 20, offset: int = 0) -> list:
     conn = get_db()
     try:
         rows = conn.execute(
-            """SELECT sid, filename, has_face, confidence, has_glasses, created_at, updated_at
+            """SELECT sid, filename, has_face, confidence, has_glasses, used_for_printing,
+                      created_at, updated_at
                FROM sessions WHERE username = ?
                ORDER BY created_at DESC LIMIT ? OFFSET ?""",
             (username, limit, offset),
@@ -259,10 +296,125 @@ def get_user_stats(username: str) -> dict:
             "SELECT COUNT(*) FROM history WHERE username = ? AND action = 'export'",
             (username,),
         ).fetchone()[0]
+        print_count = conn.execute(
+            "SELECT COUNT(*) FROM print_tasks WHERE username = ?", (username,)
+        ).fetchone()[0]
         return {
             "session_count": session_count,
             "history_count": history_count,
             "export_count": export_count,
+            "print_count": print_count,
         }
+    finally:
+        conn.close()
+
+
+def mark_sessions_for_printing(sids: List[str]) -> None:
+    """
+    标记会话已用于排版导出
+
+    Args:
+        sids: 会话 ID 列表
+    """
+    if not sids:
+        return
+    conn = get_db()
+    try:
+        for sid in sids:
+            conn.execute(
+                "UPDATE sessions SET used_for_printing = 1, updated_at = ? WHERE sid = ?",
+                (datetime.now().isoformat(), sid),
+            )
+        conn.commit()
+        logger.debug("已标记 %d 个会话用于排版", len(sids))
+    finally:
+        conn.close()
+
+
+def create_print_task(task_id: str, username: str, layout_type: str,
+                      session_ids: List[str], pdf_path: str = None,
+                      jpg_path: str = None, status: str = "completed") -> bool:
+    """
+    创建打印任务记录
+
+    Args:
+        task_id: 任务 ID
+        username: 用户名
+        layout_type: 版式类型
+        session_ids: 会话 ID 列表
+        pdf_path: PDF 文件路径
+        jpg_path: JPG 文件路径
+        status: 任务状态
+
+    Returns:
+        是否创建成功
+    """
+    conn = get_db()
+    try:
+        conn.execute(
+            """INSERT INTO print_tasks
+               (task_id, username, layout_type, session_ids, pdf_path, jpg_path, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                task_id,
+                username,
+                layout_type,
+                ",".join(session_ids),
+                pdf_path,
+                jpg_path,
+                status,
+            ),
+        )
+        conn.commit()
+        logger.debug("打印任务已创建: task_id=%s, user=%s", task_id, username)
+        return True
+    except sqlite3.IntegrityError:
+        logger.warning("打印任务已存在: task_id=%s", task_id)
+        return False
+    finally:
+        conn.close()
+
+
+def get_print_task(task_id: str) -> dict | None:
+    """
+    根据任务 ID 查询打印任务
+
+    Args:
+        task_id: 任务 ID
+
+    Returns:
+        任务信息字典，不存在返回 None
+    """
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM print_tasks WHERE task_id = ?", (task_id,)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_user_print_tasks(username: str, limit: int = 20, offset: int = 0) -> List[dict]:
+    """
+    获取用户的打印任务列表
+
+    Args:
+        username: 用户名
+        limit: 最大返回数量
+        offset: 偏移量
+
+    Returns:
+        任务列表
+    """
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            """SELECT task_id, layout_type, session_ids, status, created_at
+               FROM print_tasks WHERE username = ?
+               ORDER BY created_at DESC LIMIT ? OFFSET ?""",
+            (username, limit, offset),
+        ).fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()

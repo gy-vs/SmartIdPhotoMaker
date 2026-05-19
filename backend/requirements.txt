@@ -9,6 +9,8 @@ gunicorn==23.0.0
 # 图像处理（headless 版本，无 GUI 依赖，适合 Docker）
 opencv-python-headless==4.10.0.84
 numpy==1.26.4
+Pillow==10.4.0
+reportlab==4.2.2
 
 # AI 人脸检测 / 人像分割
 mediapipe==0.10.18
