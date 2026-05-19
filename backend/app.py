@@ -19,7 +19,9 @@ from config import get_config
 from models import (
     init_db, create_session, update_session_time, add_history,
     get_user_sessions, get_session_history, get_user_history, get_user_stats,
+    mark_sessions_exported, get_sessions_by_ids,
 )
+from printing import generate_a4_layout, ALLOWED_LAYOUTS
 from auth import login_required, register_user, login_user
 
 # 加载配置
@@ -463,6 +465,86 @@ def get_session_detail(sid):
     except Exception as e:
         logger.error("获取会话历史失败: sid=%s, %s", sid, e, exc_info=True)
         return jsonify({"error": "获取会话历史失败，请稍后重试"}), 500
+
+
+@app.route("/api/layout/export", methods=["POST"])
+@login_required
+def layout_export():
+    """批量排版导出 A4 PDF/JPG"""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "请提供请求参数"}), 400
+
+    session_ids = data.get("session_ids", [])
+    layout_type = data.get("layout_type", "one_inch")
+
+    if not session_ids or not isinstance(session_ids, list):
+        return jsonify({"error": "请选择至少一个已处理的会话"}), 400
+
+    if layout_type not in ALLOWED_LAYOUTS:
+        return jsonify({"error": f"不支持的版式: {layout_type}，可选: {', '.join(ALLOWED_LAYOUTS)}"}), 400
+
+    username = request.current_user
+    sessions = get_sessions_by_ids(session_ids, username)
+    if not sessions:
+        return jsonify({"error": "未找到属于当前用户的有效会话"}), 404
+
+    photo_paths = []
+    for s in sessions:
+        if not s.get("file_path"):
+            logger.warning("会话 %s 无文件路径，跳过", s["sid"])
+            continue
+        output_path = os.path.join(cfg.OUTPUT_DIR, f"{s['sid']}_result.jpg")
+        if os.path.exists(output_path):
+            photo_paths.append(output_path)
+        elif os.path.exists(s["file_path"]):
+            photo_paths.append(s["file_path"])
+        else:
+            logger.warning("会话 %s 的照片文件不存在，跳过", s["sid"])
+
+    if not photo_paths:
+        return jsonify({"error": "所选会话中没有可用的照片文件，请先处理照片后重试"}), 400
+
+    try:
+        result = generate_a4_layout(photo_paths, layout_type, cfg.OUTPUT_DIR)
+
+        mark_sessions_exported(session_ids)
+        add_history(",".join(session_ids), username, "layout_export", layout_type)
+
+        logger.info("排版导出成功: layout=%s, sessions=%s", layout_type, session_ids)
+        return jsonify({
+            "message": "排版导出成功",
+            "pdf_path": result["pdf_path"],
+            "jpg_path": result["jpg_path"],
+            "pdf_download": f"/api/layout/download/{os.path.basename(result['pdf_path'])}",
+            "jpg_download": f"/api/layout/download/{os.path.basename(result['jpg_path'])}",
+        })
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 500
+    except Exception as e:
+        logger.error("排版导出失败: %s", e, exc_info=True)
+        return jsonify({"error": f"排版导出失败: {e}"}), 500
+
+
+@app.route("/api/layout/download/<filename>", methods=["GET"])
+@login_required
+def layout_download(filename):
+    """下载排版生成的 PDF 或 JPG 文件"""
+    if not filename or ".." in filename or "/" in filename:
+        return jsonify({"error": "无效的文件名"}), 400
+
+    file_path = os.path.join(cfg.OUTPUT_DIR, filename)
+    if not os.path.exists(file_path):
+        return jsonify({"error": "文件不存在或已过期"}), 404
+
+    try:
+        mime_type = "application/pdf" if filename.endswith(".pdf") else "image/jpeg"
+        return send_file(file_path, as_attachment=True, download_name=filename, mimetype=mime_type)
+    except Exception as e:
+        logger.error("下载排版文件失败: %s, %s", filename, e, exc_info=True)
+        return jsonify({"error": "下载失败，请稍后重试"}), 500
 
 
 if __name__ == "__main__":

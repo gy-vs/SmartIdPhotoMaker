@@ -47,6 +47,7 @@ def init_db():
                 has_face INTEGER DEFAULT 0,
                 confidence REAL,
                 has_glasses INTEGER DEFAULT 0,
+                layout_exported INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -67,6 +68,13 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_history_sid ON history(sid);
         """)
         conn.commit()
+
+        try:
+            conn.execute("ALTER TABLE sessions ADD COLUMN layout_exported INTEGER DEFAULT 0")
+            conn.commit()
+        except Exception:
+            pass
+
         logger.info("数据库初始化完成: %s", DB_PATH)
     except Exception as e:
         logger.error("数据库初始化失败: %s", e)
@@ -160,7 +168,7 @@ def get_user_sessions(username: str, limit: int = 20, offset: int = 0) -> list:
     conn = get_db()
     try:
         rows = conn.execute(
-            """SELECT sid, filename, has_face, confidence, has_glasses, created_at, updated_at
+            """SELECT sid, filename, has_face, confidence, has_glasses, layout_exported, created_at, updated_at
                FROM sessions WHERE username = ?
                ORDER BY created_at DESC LIMIT ? OFFSET ?""",
             (username, limit, offset),
@@ -264,5 +272,55 @@ def get_user_stats(username: str) -> dict:
             "history_count": history_count,
             "export_count": export_count,
         }
+    finally:
+        conn.close()
+
+
+def mark_sessions_exported(sid_list: list):
+    """标记会话为已用于排版导出。
+
+    Args:
+        sid_list (list[str]): 需要标记的会话 ID 列表。
+
+    Returns:
+        int: 成功更新的行数。
+    """
+    if not sid_list:
+        return 0
+    conn = get_db()
+    try:
+        placeholders = ",".join("?" for _ in sid_list)
+        cursor = conn.execute(
+            f"UPDATE sessions SET layout_exported = 1 WHERE sid IN ({placeholders})",
+            sid_list,
+        )
+        conn.commit()
+        logger.info("已标记 %d 个会话为排版导出: %s", cursor.rowcount, sid_list)
+        return cursor.rowcount
+    finally:
+        conn.close()
+
+
+def get_sessions_by_ids(sid_list: list, username: str) -> list:
+    """根据 sid 列表查询会话，并校验用户归属。
+
+    Args:
+        sid_list (list[str]): 会话 ID 列表。
+        username (str): 当前用户名。
+
+    Returns:
+        list[dict]: 属于当前用户的会话列表。
+    """
+    if not sid_list:
+        return []
+    conn = get_db()
+    try:
+        placeholders = ",".join("?" for _ in sid_list)
+        rows = conn.execute(
+            f"""SELECT sid, username, filename, file_path, has_face, layout_exported
+                FROM sessions WHERE sid IN ({placeholders}) AND username = ?""",
+            sid_list + [username],
+        ).fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()

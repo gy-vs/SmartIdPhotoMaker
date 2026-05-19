@@ -77,10 +77,15 @@ def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         auth_header = request.headers.get("Authorization", "")
-        if not auth_header.startswith("Bearer "):
+        token = None
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+        else:
+            token = request.args.get("token")
+
+        if not token:
             return jsonify({"error": "未提供认证令牌，请先登录"}), 401
 
-        token = auth_header[7:]
         payload = decode_token(token)
         if payload is None:
             return jsonify({"error": "认证令牌无效或已过期，请重新登录"}), 401
